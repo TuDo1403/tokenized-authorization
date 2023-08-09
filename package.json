@@ -1,0 +1,31 @@
+{
+  "name": "contract-management",
+  "packageManager": "yarn@3.5.1",
+  "scripts": {
+    "compile": "prettier --write contracts -l && hardhat compile"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-chai-matchers": "^2.0.1",
+    "@nomicfoundation/hardhat-ethers": "^3.0.4",
+    "@nomicfoundation/hardhat-network-helpers": "^1.0.8",
+    "@nomicfoundation/hardhat-toolbox": "^3.0.0",
+    "@nomicfoundation/hardhat-verify": "^1.1.0",
+    "@openzeppelin/contracts": "^4.9.3",
+    "@typechain/ethers-v6": "^0.4.3",
+    "@typechain/hardhat": "^8.0.3",
+    "@types/chai": "^4.3.5",
+    "@types/mocha": "^10.0.1",
+    "@types/node": "^20.4.8",
+    "chai": "^4.3.7",
+    "ethers": "^6.7.0",
+    "hardhat": "^2.17.1",
+    "hardhat-gas-reporter": "^1.0.9",
+    "prettier": "^3.0.1",
+    "prettier-plugin-solidity": "^1.1.3",
+    "solidity-coverage": "^0.8.4",
+    "ts-node": "^10.9.1",
+    "typechain": "^8.3.1",
+    "typescript": "^5.1.6",
+    "yarn-upgrade-all": "^0.7.2"
+  }
+}

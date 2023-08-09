@@ -6,11 +6,7 @@ import {IAccessToken} from "./IAccessToken.sol";
 interface ITokenizedAuth {
     error ErrUnauthorized(bytes4 msgSig);
 
-    event NewAccessToken(
-        address indexed operator,
-        IAccessToken indexed prevToken,
-        IAccessToken indexed newToken
-    );
+    event NewAccessToken(address indexed operator, IAccessToken indexed prevToken, IAccessToken indexed newToken);
 
     function setAccessToken(IAccessToken accessToken) external;
 

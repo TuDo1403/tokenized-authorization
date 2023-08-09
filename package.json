@@ -2,7 +2,7 @@
   "name": "contract-management",
   "packageManager": "yarn@3.5.1",
   "scripts": {
-    "compile": "prettier --write contracts -l && hardhat compile"
+    "compile": "prettier --write --plugin=prettier-plugin-solidity 'contracts/**/*.sol' -l && hardhat compile && forge build"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-chai-matchers": "^2.0.1",

@@ -3,35 +3,32 @@ pragma solidity ^0.8.21;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Pausable} from "@openzeppelin/contracts/security/Pausable.sol";
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {ERC1155Burnable} from "@openzeppelin/contracts/token/ERC1155/extensions/ERC1155Burnable.sol";
 import {ERC1155, ERC1155Supply} from "@openzeppelin/contracts/token/ERC1155/extensions/ERC1155Supply.sol";
 import {IAccessToken} from "../interfaces/IAccessToken.sol";
 import {IERC173} from "../interfaces//IERC173.sol";
 import {LibArray} from "../libraries/LibArray.sol";
+import {LibErrorHandler} from "../libraries/LibErrorHandler.sol";
+import {RoleBasedAccount} from "../utils/RoleBasedAccount.sol";
+import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import {ShortString, ShortStrings} from "@openzeppelin/contracts/utils/ShortStrings.sol";
 
-abstract contract AccessToken is
-    ERC1155Burnable,
-    ERC1155Supply,
-    Pausable,
-    Ownable,
-    IAccessToken
-{
+abstract contract AccessToken is Initializable, Pausable, Ownable, ERC1155Burnable, ERC1155Supply, IAccessToken {
+    using Clones for *;
     using LibArray for *;
     using ShortStrings for *;
+    using LibErrorHandler for *;
     using EnumerableSet for EnumerableSet.AddressSet;
 
-    ShortString internal immutable ADMIN_ROLE =
-        ShortStrings.toShortString("ADMIN_ROLE");
-    ShortString internal immutable PAUSER_ROLE =
-        ShortStrings.toShortString("PAUSER_ROLE");
-    ShortString internal immutable DEPLOYER_ROLE =
-        ShortStrings.toShortString("DEPLOYER_ROLE");
+    ShortString public immutable ADMIN_ROLE = ShortStrings.toShortString("ADMIN_ROLE");
+    ShortString public immutable PAUSER_ROLE = ShortStrings.toShortString("PAUSER_ROLE");
+    ShortString public immutable DEPLOYER_ROLE = ShortStrings.toShortString("DEPLOYER_ROLE");
 
-    uint256 internal constant BLACKLIST_TOKEN =
-        uint256(keccak256("BLACKLIST_TOKEN"));
+    uint256 public constant BLACKLIST_TOKEN = uint256(keccak256("BLACKLIST_TOKEN"));
 
+    address internal _roleBasedAccountImpl;
     EnumerableSet.AddressSet internal _registeredProxies;
 
     modifier onlyRole(ShortString role) virtual {
@@ -39,21 +36,70 @@ abstract contract AccessToken is
         _;
     }
 
-    function supportsInterface(
-        bytes4 interfaceId
-    ) public view override returns (bool) {
+    function supportsInterface(bytes4 interfaceId) public view override returns (bool) {
         return
             super.supportsInterface(interfaceId) ||
             interfaceId == type(IERC173).interfaceId ||
             interfaceId == type(IAccessToken).interfaceId;
     }
 
-    function exec() external payable {}
+    function createRoleBasedAccounts(
+        address[] calldata proxies,
+        RoleInfo[] calldata roleInfos
+    ) external virtual onlyRole(ADMIN_ROLE) {
+        uint256 length = proxies.length;
+        if (length != roleInfos.length) revert ErrLengthMismatch();
+
+        bytes32 salt;
+        uint256 roleId;
+        address deployed;
+        uint256 memberLength;
+        address roleBasedAccountImpl = _roleBasedAccountImpl;
+
+        for (uint256 i; i < length; ) {
+            salt = keccak256(abi.encode(roleInfos[i].role, proxies[i]));
+            deployed = roleBasedAccountImpl.cloneDeterministic(salt);
+            RoleBasedAccount(payable(deployed)).initialize(proxies[i]);
+
+            memberLength = roleInfos[i].members.length;
+            roleId = getAccessTokenId(proxies[i], ShortString.wrap(roleInfos[i].role));
+            for (uint256 j; i < memberLength; ) {
+                _mint(roleInfos[i].members[j], roleId, 1, "");
+
+                unchecked {
+                    ++j;
+                }
+            }
+
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    function getRoleBasedAccount(bytes32 role, address proxy) public view virtual returns (address) {
+        return Clones.predictDeterministicAddress(_roleBasedAccountImpl, keccak256(abi.encode(role, proxy)));
+    }
+
+    function exec(
+        bytes32 role,
+        address to,
+        bytes calldata params
+    ) external payable virtual returns (bytes memory returnData) {
+        _requireRole(ShortString.wrap(role), to, msg.sender);
+
+        address roleBasedAccount = getRoleBasedAccount(role, to);
+        if (roleBasedAccount.code.length == 0) revert ErrAccountNotCreated();
+
+        bool success;
+        (success, returnData) = roleBasedAccount.call{value: msg.value}(params);
+        success.handleRevert(bytes4(params[:4]), returnData);
+    }
 
     function setAccountStatus(
         address account,
         bool shouldBlacklist
-    ) external onlyRole(PAUSER_ROLE) returns (bool updated) {
+    ) external virtual onlyRole(PAUSER_ROLE) returns (bool updated) {
         if (shouldBlacklist) {
             if (!isBlacklisted(account)) {
                 updated = true;
@@ -78,10 +124,7 @@ abstract contract AccessToken is
         _unpause();
     }
 
-    function getRoleName(
-        address proxy,
-        uint256 tokenId
-    ) external view returns (string memory) {
+    function getRoleName(address proxy, uint256 tokenId) external view virtual returns (string memory) {
         if (!exists(tokenId)) revert ErrTokenUnexists(tokenId);
 
         ShortString sstr;
@@ -92,45 +135,31 @@ abstract contract AccessToken is
         return sstr.toString();
     }
 
-    function isBlacklisted(address account) public view returns (bool) {
+    function isBlacklisted(address account) public view virtual returns (bool) {
         return balanceOf(account, BLACKLIST_TOKEN) != 0;
     }
 
-    function getRegisteredProxies()
-        public
-        view
-        returns (address[] memory proxies)
-    {
+    function getRegisteredProxies() public view returns (address[] memory proxies) {
         proxies = _registeredProxies.values();
     }
 
-    function isAuthorized(
-        ShortString role,
-        address proxy,
-        address account
-    ) public view returns (bool) {
+    function isAuthorized(ShortString role, address proxy, address account) public view virtual returns (bool) {
         if (isBlacklisted(account)) revert ErrBlacklisted(msg.sig, account);
         return
             balanceOf(account, getAccessTokenId(proxy, role)) != 0 ||
-            balanceOf(account, getAccessTokenId(address(this), ADMIN_ROLE)) !=
-            0;
+            balanceOf(account, getAccessTokenId(address(this), ADMIN_ROLE)) != 0;
     }
 
-    function _grantGlobalRoles(
-        address admin,
-        address[] memory whitelistedDeployers
-    ) internal {
+    function _initialize(address admin, address[] memory whitelistedDeployers) internal virtual onlyInitializing {
+        _roleBasedAccountImpl = address(new RoleBasedAccount());
+
         _transferOwnership(admin);
 
         uint256[] memory amounts = uint256(1).repeat(4);
         address self = address(this);
         uint256 deployerId = getAccessTokenId(self, DEPLOYER_ROLE);
         uint256[] memory ids = LibArray.toUint256s(
-            abi.encode(
-                deployerId,
-                getAccessTokenId(self, ADMIN_ROLE),
-                getAccessTokenId(self, PAUSER_ROLE)
-            )
+            abi.encode(deployerId, getAccessTokenId(self, ADMIN_ROLE), getAccessTokenId(self, PAUSER_ROLE))
         );
 
         _mintBatch(admin, ids, amounts, "");
@@ -144,7 +173,7 @@ abstract contract AccessToken is
         }
     }
 
-    function registerAsProxy() external whenNotPaused {
+    function registerAsProxy() external virtual whenNotPaused {
         address sender = _msgSender();
         if (tx.origin == sender) revert ErrEOAUnallowed(msg.sig);
         _requireRole(DEPLOYER_ROLE, address(this), tx.origin);
@@ -154,47 +183,42 @@ abstract contract AccessToken is
             revert ErrAdminRoleAlreadyMintedFor(sender);
         }
 
-        _mint(owner(), proxyAdminId, 1, "");
         _mint(sender, proxyAdminId, 1, "");
+        _mint(owner(), proxyAdminId, 1, "");
+        _mint(IERC173(sender).owner(), proxyAdminId, 1, "");
+
         _registeredProxies.add(sender);
 
         emit ProxyRegistered(sender, tx.origin);
     }
 
-    function mintAccessToken(
-        ShortString role,
-        address proxy,
-        address account
-    ) external whenNotPaused {
+    function mintAccessToken(ShortString role, address proxy, address account) external virtual whenNotPaused {
         _requireRole(ADMIN_ROLE, proxy, _msgSender());
         _mint(account, getAccessTokenId(proxy, role), 1, "");
     }
 
-    function burnAccessToken(
-        ShortString role,
-        address proxy,
-        address account
-    ) external whenNotPaused {
+    function burnAccessToken(ShortString role, address proxy, address account) external virtual whenNotPaused {
         _requireRole(ADMIN_ROLE, proxy, _msgSender());
         _burn(account, getAccessTokenId(proxy, role), 1);
     }
 
-    function getAccessTokenCount(
-        address proxy,
-        ShortString role
-    ) external view returns (uint256) {
+    function getAccessTokenCount(address proxy, ShortString role) external view returns (uint256) {
         return totalSupply(getAccessTokenId(proxy, role));
     }
 
-    function getAccessTokenId(
-        address proxy,
-        ShortString role
-    ) public pure returns (uint256 id) {
+    function getAccessTokenId(address proxy, ShortString role) public view virtual returns (uint256 id) {
         assembly ("memory-safe") {
             id := xor(proxy, role)
         }
-        if (id == BLACKLIST_TOKEN) {
-            revert ErrIdCollidedWithBlacklistToken(role, proxy);
+
+        address self = address(this);
+        if (
+            id == BLACKLIST_TOKEN ||
+            id == getAccessTokenId(self, ADMIN_ROLE) ||
+            id == getAccessTokenId(self, PAUSER_ROLE) ||
+            id == getAccessTokenId(self, DEPLOYER_ROLE)
+        ) {
+            revert ErrIdCollision(role, proxy);
         }
     }
 
@@ -206,9 +230,9 @@ abstract contract AccessToken is
         uint256[] memory amounts,
         bytes memory data
     ) internal virtual override(ERC1155, ERC1155Supply) whenNotPaused {
-        uint256 length = ids.length;
-        address self = address(this);
         address sender = msg.sender;
+        address self = address(this);
+        uint256 length = ids.length;
         ShortString pauserRole = PAUSER_ROLE;
         uint256 blacklistToken = BLACKLIST_TOKEN;
 
@@ -226,18 +250,9 @@ abstract contract AccessToken is
     }
 
     /// @dev see: https://github.com/OpenZeppelin/openzeppelin-contracts/blob/54a235f8959ecffb1916cf5693ec9bbd695cbf71/contracts/interfaces/draft-IERC6093.sol#L120
-    error ERC1155InsufficientBalance(
-        address sender,
-        uint256 balance,
-        uint256 needed,
-        uint256 tokenId
-    );
+    error ERC1155InsufficientBalance(address sender, uint256 balance, uint256 needed, uint256 tokenId);
 
-    function _requireRole(
-        ShortString role,
-        address proxy,
-        address account
-    ) internal view {
+    function _requireRole(ShortString role, address proxy, address account) internal view {
         if (!isAuthorized(role, proxy, account)) {
             revert ERC1155InsufficientBalance({
                 sender: account,

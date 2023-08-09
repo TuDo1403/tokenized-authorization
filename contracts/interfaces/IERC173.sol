@@ -8,10 +8,7 @@ import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 /* is ERC165 */
 interface IERC173 is IERC165 {
     /// @dev This emits when ownership of a contract changes.
-    event OwnershipTransferred(
-        address indexed previousOwner,
-        address indexed newOwner
-    );
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
     /// @notice Get the address of the owner
     /// @return The address of the owner.

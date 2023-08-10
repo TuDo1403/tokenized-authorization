@@ -15,7 +15,7 @@ import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import {ShortString, ShortStrings} from "@openzeppelin/contracts/utils/ShortStrings.sol";
 
-abstract contract AccessToken is Initializable, Pausable, Ownable, ERC1155Burnable, ERC1155Supply, IAccessToken {
+abstract contract AccessToken is Initializable, Pausable, ERC1155Burnable, ERC1155Supply, IAccessToken {
     using Clones for *;
     using LibArray for *;
     using ShortStrings for *;
@@ -23,11 +23,9 @@ abstract contract AccessToken is Initializable, Pausable, Ownable, ERC1155Burnab
     using EnumerableSet for EnumerableSet.AddressSet;
 
     ShortString public immutable ADMIN_ROLE = ShortStrings.toShortString("ADMIN_ROLE");
-    ShortString public immutable PAUSER_ROLE = ShortStrings.toShortString("PAUSER_ROLE");
     ShortString public immutable DEPLOYER_ROLE = ShortStrings.toShortString("DEPLOYER_ROLE");
 
-    uint256 public constant BLACKLIST_TOKEN = uint256(keccak256("BLACKLIST_TOKEN"));
-
+    address internal _admin;
     address internal _roleBasedAccountImpl;
     EnumerableSet.AddressSet internal _registeredProxies;
 
@@ -96,31 +94,11 @@ abstract contract AccessToken is Initializable, Pausable, Ownable, ERC1155Burnab
         success.handleRevert(bytes4(params[:4]), returnData);
     }
 
-    function setAccountStatus(
-        address account,
-        bool shouldBlacklist
-    ) external virtual onlyRole(PAUSER_ROLE) returns (bool updated) {
-        if (shouldBlacklist) {
-            if (!isBlacklisted(account)) {
-                updated = true;
-                _mint(account, BLACKLIST_TOKEN, 1, "");
-            }
-        } else {
-            if (isBlacklisted(account)) {
-                updated = true;
-                _burn(account, BLACKLIST_TOKEN, 1);
-            }
-        }
-        if (updated) {
-            emit NewAccountStatus(_msgSender(), account, shouldBlacklist);
-        }
-    }
-
-    function pause() external onlyRole(PAUSER_ROLE) {
+    function pause() external onlyRole(ADMIN_ROLE) {
         _pause();
     }
 
-    function unpause() external onlyRole(PAUSER_ROLE) {
+    function unpause() external onlyRole(ADMIN_ROLE) {
         _unpause();
     }
 
@@ -135,32 +113,24 @@ abstract contract AccessToken is Initializable, Pausable, Ownable, ERC1155Burnab
         return sstr.toString();
     }
 
-    function isBlacklisted(address account) public view virtual returns (bool) {
-        return balanceOf(account, BLACKLIST_TOKEN) != 0;
-    }
-
     function getRegisteredProxies() public view returns (address[] memory proxies) {
         proxies = _registeredProxies.values();
     }
 
     function isAuthorized(ShortString role, address proxy, address account) public view virtual returns (bool) {
-        if (isBlacklisted(account)) revert ErrBlacklisted(msg.sig, account);
         return
             balanceOf(account, getAccessTokenId(proxy, role)) != 0 ||
             balanceOf(account, getAccessTokenId(address(this), ADMIN_ROLE)) != 0;
     }
 
     function _initialize(address admin, address[] memory whitelistedDeployers) internal virtual onlyInitializing {
+        _admin = admin;
         _roleBasedAccountImpl = address(new RoleBasedAccount());
-
-        _transferOwnership(admin);
 
         uint256[] memory amounts = uint256(1).repeat(4);
         address self = address(this);
         uint256 deployerId = getAccessTokenId(self, DEPLOYER_ROLE);
-        uint256[] memory ids = LibArray.toUint256s(
-            abi.encode(deployerId, getAccessTokenId(self, ADMIN_ROLE), getAccessTokenId(self, PAUSER_ROLE))
-        );
+        uint256[] memory ids = LibArray.toUint256s(abi.encode(deployerId, getAccessTokenId(self, ADMIN_ROLE)));
 
         _mintBatch(admin, ids, amounts, "");
 
@@ -183,8 +153,8 @@ abstract contract AccessToken is Initializable, Pausable, Ownable, ERC1155Burnab
             revert ErrAdminRoleAlreadyMintedFor(sender);
         }
 
+        _mint(_admin, proxyAdminId, 1, "");
         _mint(sender, proxyAdminId, 1, "");
-        _mint(owner(), proxyAdminId, 1, "");
         _mint(IERC173(sender).owner(), proxyAdminId, 1, "");
 
         _registeredProxies.add(sender);
@@ -211,15 +181,10 @@ abstract contract AccessToken is Initializable, Pausable, Ownable, ERC1155Burnab
             id := xor(proxy, role)
         }
 
-        address self = address(this);
-        if (
-            id == BLACKLIST_TOKEN ||
-            id == getAccessTokenId(self, ADMIN_ROLE) ||
-            id == getAccessTokenId(self, PAUSER_ROLE) ||
-            id == getAccessTokenId(self, DEPLOYER_ROLE)
-        ) {
-            revert ErrIdCollision(role, proxy);
-        }
+        // address self = address(this);
+        // if (id == getAccessTokenId(self, ADMIN_ROLE) || id == getAccessTokenId(self, DEPLOYER_ROLE)) {
+        //     revert ErrIdCollision(role, proxy);
+        // }
     }
 
     function _beforeTokenTransfer(
@@ -230,22 +195,6 @@ abstract contract AccessToken is Initializable, Pausable, Ownable, ERC1155Burnab
         uint256[] memory amounts,
         bytes memory data
     ) internal virtual override(ERC1155, ERC1155Supply) whenNotPaused {
-        address sender = msg.sender;
-        address self = address(this);
-        uint256 length = ids.length;
-        ShortString pauserRole = PAUSER_ROLE;
-        uint256 blacklistToken = BLACKLIST_TOKEN;
-
-        for (uint256 i; i < length; ) {
-            if (ids[i] == blacklistToken) {
-                _requireRole(pauserRole, self, sender);
-            }
-
-            unchecked {
-                ++i;
-            }
-        }
-
         super._beforeTokenTransfer(operator, from, to, ids, amounts, data);
     }
 

@@ -9,15 +9,12 @@ interface IAccessToken {
     error ErrEOAUnallowed(bytes4 msgSig);
     error ErrTokenUnexists(uint256 tokenId);
     error ErrAdminRoleAlreadyMintedFor(address proxy);
-    error ErrBlacklisted(bytes4 msgSig, address account);
     error ErrIdCollision(ShortString role, address proxy);
 
     struct RoleInfo {
         bytes32 role;
         address[] members;
     }
-
-    event NewAccountStatus(address indexed operator, address indexed account, bool indexed status);
 
     event ProxyRegistered(address indexed originCaller, address indexed proxy);
 
@@ -39,19 +36,11 @@ interface IAccessToken {
 
     function ADMIN_ROLE() external view returns (ShortString);
 
-    function PAUSER_ROLE() external view returns (ShortString);
-
     function DEPLOYER_ROLE() external view returns (ShortString);
-
-    function BLACKLIST_TOKEN() external view returns (uint256);
-
-    function isBlacklisted(address account) external view returns (bool);
 
     function isAuthorized(ShortString role, address proxy, address account) external view returns (bool);
 
     function getAccessTokenId(address proxy, ShortString role) external view returns (uint256 id);
 
     function getAccessTokenCount(address proxy, ShortString role) external view returns (uint256);
-
-    function setAccountStatus(address account, bool shouldBlacklist) external returns (bool updated);
 }

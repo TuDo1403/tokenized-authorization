@@ -10,6 +10,7 @@ interface IAccessToken {
     error ErrTokenUnexists(uint256 tokenId);
     error ErrAdminRoleAlreadyMintedFor(address proxy);
     error ErrIdCollision(ShortString role, address proxy);
+    error ErrDirectTransferUnallowed(bytes4 msgSig, address owner, address requiredSender);
 
     struct RoleInfo {
         bytes32 role;

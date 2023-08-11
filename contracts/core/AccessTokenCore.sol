@@ -181,10 +181,12 @@ abstract contract AccessToken is Initializable, Pausable, ERC1155Burnable, ERC11
             id := xor(proxy, role)
         }
 
-        // address self = address(this);
-        // if (id == getAccessTokenId(self, ADMIN_ROLE) || id == getAccessTokenId(self, DEPLOYER_ROLE)) {
-        //     revert ErrIdCollision(role, proxy);
-        // }
+        address self = address(this);
+        if (self != proxy) {
+            if (id == getAccessTokenId(self, ADMIN_ROLE) || id == getAccessTokenId(self, DEPLOYER_ROLE)) {
+                revert ErrIdCollision(role, proxy);
+            }
+        }
     }
 
     function _beforeTokenTransfer(
@@ -195,6 +197,7 @@ abstract contract AccessToken is Initializable, Pausable, ERC1155Burnable, ERC11
         uint256[] memory amounts,
         bytes memory data
     ) internal virtual override(ERC1155, ERC1155Supply) whenNotPaused {
+        if (_msgSender() == from) revert ErrDirectTransferUnallowed(msg.sig, from, operator);
         super._beforeTokenTransfer(operator, from, to, ids, amounts, data);
     }
 

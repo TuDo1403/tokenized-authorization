@@ -3,9 +3,10 @@ pragma solidity ^0.8.21;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {IRoleBasedProxy} from "../interfaces/IRoleBasedProxy.sol";
 import {LibErrorHandler} from "../libraries/LibErrorHandler.sol";
 
-contract RoleBasedAccount is Initializable, Ownable {
+contract RoleBasedProxy is Initializable, Ownable, IRoleBasedProxy {
     using LibErrorHandler for *;
 
     error ErrNotInitialized();

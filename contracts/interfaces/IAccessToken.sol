@@ -4,6 +4,7 @@ pragma solidity ^0.8.21;
 import {ShortString} from "@openzeppelin/contracts/utils/ShortStrings.sol";
 
 interface IAccessToken {
+    error ErrInvalidArgument();
     error ErrLengthMismatch();
     error ErrAccountNotCreated();
     error ErrEOAUnallowed(bytes4 msgSig);

@@ -14,7 +14,7 @@ abstract contract TokenizedAuthCore is Initializable, Ownable, IAccessControl, I
     IAccessToken internal _accessToken;
 
     modifier onlyRole(bytes32 role) virtual {
-        _requireRole(ShortString.wrap(role), msg.sender);
+        _requireRole(ShortString.wrap(role), _msgSender());
         _;
     }
 
@@ -84,6 +84,10 @@ abstract contract TokenizedAuthCore is Initializable, Ownable, IAccessControl, I
         return _accessToken.getAccessTokenCount(address(this), ShortString.wrap(role));
     }
 
+    function getRoleMember(bytes32 role, uint256 index) public view virtual returns (address) {
+        
+    }
+
     function supportsInterface(bytes4 interfaceId) public pure virtual returns (bool) {
         return
             interfaceId == type(IERC165).interfaceId ||
@@ -94,7 +98,7 @@ abstract contract TokenizedAuthCore is Initializable, Ownable, IAccessControl, I
     }
 
     function _setAccessToken(IAccessToken accessToken) internal virtual {
-        emit NewAccessToken(msg.sender, _accessToken, accessToken);
+        emit NewAccessToken(_msgSender(), _accessToken, accessToken);
         _accessToken = accessToken;
     }
 
@@ -119,7 +123,7 @@ abstract contract TokenizedAuthCore is Initializable, Ownable, IAccessControl, I
     }
 
     function _requireAccessToken() internal view virtual {
-        if (msg.sender != address(_accessToken)) {
+        if (_msgSender() != address(_accessToken)) {
             revert ErrUnauthorized(msg.sig);
         }
     }

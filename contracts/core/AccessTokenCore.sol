@@ -1,26 +1,35 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.21;
 
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Pausable} from "@openzeppelin/contracts/security/Pausable.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {ERC1155Burnable} from "@openzeppelin/contracts/token/ERC1155/extensions/ERC1155Burnable.sol";
 import {ERC1155, ERC1155Supply} from "@openzeppelin/contracts/token/ERC1155/extensions/ERC1155Supply.sol";
+import {ERC1155URIStorage} from "@openzeppelin/contracts/token/ERC1155/extensions/ERC1155URIStorage.sol";
 import {IAccessToken} from "../interfaces/IAccessToken.sol";
 import {IERC173} from "../interfaces//IERC173.sol";
 import {LibArray} from "../libraries/LibArray.sol";
 import {LibErrorHandler} from "../libraries/LibErrorHandler.sol";
-import {RoleBasedAccount} from "../utils/RoleBasedAccount.sol";
+import {IRoleBasedProxy, RoleBasedProxy} from "../utils/RoleBasedProxy.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 import {ShortString, ShortStrings} from "@openzeppelin/contracts/utils/ShortStrings.sol";
 
-abstract contract AccessToken is Initializable, Pausable, ERC1155Burnable, ERC1155Supply, IAccessToken {
+abstract contract AccessToken is
+    Initializable,
+    Pausable,
+    ERC1155Supply,
+    ERC1155Burnable,
+    ERC1155URIStorage,
+    IAccessToken
+{
     using Clones for *;
+    using Strings for *;
     using LibArray for *;
     using ShortStrings for *;
+    using EnumerableSet for *;
     using LibErrorHandler for *;
-    using EnumerableSet for EnumerableSet.AddressSet;
 
     ShortString public immutable ADMIN_ROLE = ShortStrings.toShortString("ADMIN_ROLE");
     ShortString public immutable DEPLOYER_ROLE = ShortStrings.toShortString("DEPLOYER_ROLE");
@@ -28,10 +37,16 @@ abstract contract AccessToken is Initializable, Pausable, ERC1155Burnable, ERC11
     address internal _admin;
     address internal _roleBasedAccountImpl;
     EnumerableSet.AddressSet internal _registeredProxies;
+    mapping(address => EnumerableSet.Bytes32Set) internal _proxyRoles;
+    mapping(address => mapping(ShortString => EnumerableSet.AddressSet)) internal _roleMembers;
 
     modifier onlyRole(ShortString role) virtual {
         _requireRole(role, address(this), msg.sender);
         _;
+    }
+
+    function uri(uint256 tokenId) public view virtual override(ERC1155, ERC1155URIStorage) returns (string memory) {
+        return super.uri(tokenId);
     }
 
     function supportsInterface(bytes4 interfaceId) public view override returns (bool) {
@@ -49,20 +64,20 @@ abstract contract AccessToken is Initializable, Pausable, ERC1155Burnable, ERC11
         if (length != roleInfos.length) revert ErrLengthMismatch();
 
         bytes32 salt;
-        uint256 roleId;
         address deployed;
         uint256 memberLength;
         address roleBasedAccountImpl = _roleBasedAccountImpl;
 
         for (uint256 i; i < length; ) {
+            if (proxies[i] == address(this)) revert ErrInvalidArgument();
+
             salt = keccak256(abi.encode(roleInfos[i].role, proxies[i]));
             deployed = roleBasedAccountImpl.cloneDeterministic(salt);
-            RoleBasedAccount(payable(deployed)).initialize(proxies[i]);
+            IRoleBasedProxy(deployed).initialize(proxies[i]);
 
             memberLength = roleInfos[i].members.length;
-            roleId = getAccessTokenId(proxies[i], ShortString.wrap(roleInfos[i].role));
-            for (uint256 j; i < memberLength; ) {
-                _mint(roleInfos[i].members[j], roleId, 1, "");
+            for (uint256 j; j < memberLength; ) {
+                _mintAccessToken(ShortString.wrap(roleInfos[i].role), proxies[i], roleInfos[i].members[j]);
 
                 unchecked {
                     ++j;
@@ -123,14 +138,14 @@ abstract contract AccessToken is Initializable, Pausable, ERC1155Burnable, ERC11
             balanceOf(account, getAccessTokenId(address(this), ADMIN_ROLE)) != 0;
     }
 
-    function _initialize(address admin, address[] memory whitelistedDeployers) internal virtual onlyInitializing {
+    function _setupAdminRoles(address admin, address[] memory whitelistedDeployers) internal virtual onlyInitializing {
         _admin = admin;
-        _roleBasedAccountImpl = address(new RoleBasedAccount());
+        _roleBasedAccountImpl = address(new RoleBasedProxy());
 
-        uint256[] memory amounts = uint256(1).repeat(4);
         address self = address(this);
         uint256 deployerId = getAccessTokenId(self, DEPLOYER_ROLE);
         uint256[] memory ids = LibArray.toUint256s(abi.encode(deployerId, getAccessTokenId(self, ADMIN_ROLE)));
+        uint256[] memory amounts = uint256(1).repeat(ids.length);
 
         _mintBatch(admin, ids, amounts, "");
 
@@ -148,14 +163,15 @@ abstract contract AccessToken is Initializable, Pausable, ERC1155Burnable, ERC11
         if (tx.origin == sender) revert ErrEOAUnallowed(msg.sig);
         _requireRole(DEPLOYER_ROLE, address(this), tx.origin);
 
-        uint256 proxyAdminId = getAccessTokenId(sender, ADMIN_ROLE);
+        ShortString adminRole = ADMIN_ROLE;
+        uint256 proxyAdminId = getAccessTokenId(sender, adminRole);
         if (balanceOf(sender, proxyAdminId) != 0) {
             revert ErrAdminRoleAlreadyMintedFor(sender);
         }
 
-        _mint(_admin, proxyAdminId, 1, "");
-        _mint(sender, proxyAdminId, 1, "");
-        _mint(IERC173(sender).owner(), proxyAdminId, 1, "");
+        _mintAccessToken(adminRole, sender, _admin);
+        _mintAccessToken(adminRole, sender, sender);
+        _mintAccessToken(adminRole, sender, IERC173(sender).owner());
 
         _registeredProxies.add(sender);
 
@@ -164,12 +180,12 @@ abstract contract AccessToken is Initializable, Pausable, ERC1155Burnable, ERC11
 
     function mintAccessToken(ShortString role, address proxy, address account) external virtual whenNotPaused {
         _requireRole(ADMIN_ROLE, proxy, _msgSender());
-        _mint(account, getAccessTokenId(proxy, role), 1, "");
+        _mintAccessToken(role, proxy, account);
     }
 
     function burnAccessToken(ShortString role, address proxy, address account) external virtual whenNotPaused {
         _requireRole(ADMIN_ROLE, proxy, _msgSender());
-        _burn(account, getAccessTokenId(proxy, role), 1);
+        _burnAccessToken(role, proxy, account);
     }
 
     function getAccessTokenCount(address proxy, ShortString role) external view returns (uint256) {
@@ -189,6 +205,25 @@ abstract contract AccessToken is Initializable, Pausable, ERC1155Burnable, ERC11
         }
     }
 
+    function _mintAccessToken(ShortString role, address proxy, address account) internal virtual {
+        uint256 roleId = getAccessTokenId(proxy, role);
+
+        _mint(account, roleId, 1, "");
+        _setURI(roleId, string(abi.encodePacked(proxy.toHexString(), "@", role.toString())));
+        _roleMembers[proxy][role].add(account);
+        _proxyRoles[proxy].add(ShortString.unwrap(role));
+    }
+
+    function _burnAccessToken(ShortString role, address proxy, address account) internal virtual {
+        uint256 roleId = getAccessTokenId(proxy, role);
+
+        _burn(account, roleId, 1);
+        _setURI(roleId, "");
+
+        _roleMembers[proxy][role].remove(account);
+        _proxyRoles[proxy].remove(ShortString.unwrap(role));
+    }
+
     function _beforeTokenTransfer(
         address operator,
         address from,
@@ -198,6 +233,7 @@ abstract contract AccessToken is Initializable, Pausable, ERC1155Burnable, ERC11
         bytes memory data
     ) internal virtual override(ERC1155, ERC1155Supply) whenNotPaused {
         if (_msgSender() == from) revert ErrDirectTransferUnallowed(msg.sig, from, operator);
+
         super._beforeTokenTransfer(operator, from, to, ids, amounts, data);
     }
 
